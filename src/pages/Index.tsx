@@ -1,5 +1,6 @@
 import { motion } from "framer-motion";
-import { Link } from "react-router-dom";
+import { useState, useEffect } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import {
   Users, HandHelping, DollarSign, ArrowRight, Heart,
@@ -92,12 +93,16 @@ const howItWorks = [
   },
 ];
 
-const impactStats = [
-  { icon: ClipboardList, value: "8,200+", label: "Help Requests Fulfilled" },
-  { icon: Heart, value: "14,000+", label: "Active Volunteers" },
-  { icon: Building2, value: "320+", label: "Partner Organizations" },
-  { icon: DollarSign, value: "$2.4M+", label: "Donations Coordinated" },
-];
+// Dynamic impact counts from Supabase
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/contexts/AuthContext";
+
+const initialImpact = {
+  requestsFulfilled: 0,
+  totalVolunteers: 0,
+  totalOrganizations: 0,
+  totalDonationsCoordinators: 0,
+};
 
 const impactFeatures = [
   { icon: Globe, title: "Global Reach", description: "Operating in 50+ cities across 12 countries, growing every month." },
@@ -111,6 +116,46 @@ const fadeUp = {
 };
 
 const Index = () => {
+  const navigate = useNavigate();
+  const [impact, setImpact] = useState(initialImpact);
+  const [loadingImpact, setLoadingImpact] = useState(true);
+  const { user, profile } = useAuth();
+
+  useEffect(() => {
+    let mounted = true;
+    const fetchImpact = async () => {
+      try {
+        const { count: requestsCount } = await supabase.from("service_requests").select("*", { count: "exact", head: true }).eq("status", "completed");
+        const { count: donorsCount } = await supabase.from("profiles").select("*", { count: "exact", head: true }).eq("role", "donor");
+        const { count: volunteersCount } = await supabase.from("profiles").select("*", { count: "exact", head: true }).eq("role", "volunteer");
+        const { count: orgsCount } = await supabase.from("profiles").select("*", { count: "exact", head: true }).eq("role", "organization");
+        const { data: donationsData } = await supabase.from("donations").select("donor_id");
+        const distinctDonors = donationsData ? new Set(donationsData.map((d: any) => d.donor_id)).size : 0;
+
+        if (!mounted) return;
+        setImpact({
+          requestsFulfilled: requestsCount || 0,
+          totalVolunteers: volunteersCount || 0,
+          totalOrganizations: orgsCount || 0,
+          totalDonationsCoordinators: distinctDonors || 0,
+        });
+      } catch (err) {
+        setImpact(initialImpact);
+      } finally {
+        if (mounted) setLoadingImpact(false);
+      }
+    };
+    fetchImpact();
+    return () => { mounted = false; };
+  }, []);
+
+  const impactStats = [
+    { icon: ClipboardList, value: loadingImpact ? "—" : (impact.requestsFulfilled || 0).toLocaleString(), label: "Help Requests Fulfilled" },
+    { icon: Heart, value: loadingImpact ? "—" : (impact.totalVolunteers || 0).toLocaleString(), label: "Active Volunteers" },
+    { icon: Building2, value: loadingImpact ? "—" : (impact.totalOrganizations || 0).toLocaleString(), label: "Partner Organizations" },
+    { icon: DollarSign, value: loadingImpact ? "—" : (impact.totalDonationsCoordinators || 0).toLocaleString(), label: "Donations Coordinators" },
+  ];
+
   return (
     <div className="min-h-screen bg-background">
       {/* Nav */}
@@ -164,11 +209,11 @@ const Index = () => {
             AccessAble bridges the gap between those who need help and those willing to give it.
           </motion.p>
           <motion.div className="flex flex-col sm:flex-row gap-4 justify-center" initial="hidden" animate="visible" variants={fadeUp} custom={3}>
-            <Button variant="hero" size="lg" className="rounded-full px-10" asChild>
-              <Link to="/register">Sign Up Free</Link>
+            <Button variant="hero" size="lg" className="rounded-full px-10" onClick={() => { if (!user) navigate('/signup'); else navigate(`/dashboard/${profile?.role || 'individual'}`); }}>
+              Sign Up Free
             </Button>
-            <Button variant="outline" size="lg" className="rounded-full px-10" asChild>
-              <Link to="/login">Login <ArrowRight className="w-4 h-4 ml-1" /></Link>
+            <Button variant="outline" size="lg" className="rounded-full px-10" onClick={() => { if (!user) navigate('/login'); else navigate(`/dashboard/${profile?.role || 'individual'}`); }}>
+              Login <ArrowRight className="w-4 h-4 ml-1" />
             </Button>
           </motion.div>
         </div>
@@ -178,8 +223,9 @@ const Index = () => {
       <section className="py-16 px-4">
         <div className="container max-w-5xl">
           <motion.div
-            className="relative rounded-2xl overflow-hidden shadow-lg"
+            className="relative rounded-2xl overflow-hidden shadow-lg cursor-pointer"
             initial={{ opacity: 0, y: 40 }} whileInView={{ opacity: 1, y: 0 }} viewport={{ once: true }}
+            onClick={() => navigate("/story")}
           >
             <img
               src="https://images.unsplash.com/photo-1559027615-cd4628902d4a?w=1200&h=500&fit=crop"
@@ -210,8 +256,9 @@ const Index = () => {
             {roles.map((role, i) => (
               <motion.div
                 key={role.title}
-                className="bg-card rounded-xl p-6 border shadow-sm hover:shadow-md transition-shadow"
+                className={`bg-card rounded-xl p-6 border shadow-sm hover:shadow-md transition-shadow ${role.title === 'Organizations' ? 'cursor-pointer' : ''}`}
                 initial="hidden" whileInView="visible" viewport={{ once: true }} variants={fadeUp} custom={i}
+                onClick={() => role.title === 'Organizations' && navigate('/organizations')}
               >
                 <div className={`w-12 h-12 rounded-lg ${role.iconBg} flex items-center justify-center mb-4`}>
                   <role.icon className={`w-6 h-6 ${role.tagColor}`} />
@@ -341,10 +388,8 @@ const Index = () => {
             <div>
               <h4 className="font-heading font-semibold text-foreground mb-4">About</h4>
               <ul className="space-y-2 text-sm text-muted-foreground">
-                <li><a href="#" className="hover:text-foreground transition-colors">Our Mission</a></li>
-                <li><a href="#" className="hover:text-foreground transition-colors">Team</a></li>
-                <li><a href="#" className="hover:text-foreground transition-colors">Careers</a></li>
-                <li><a href="#" className="hover:text-foreground transition-colors">Press</a></li>
+                <li><Link to="/mission" className="hover:text-foreground transition-colors">Our Mission</Link></li>
+                <li><Link to="/mission" className="hover:text-foreground transition-colors">Team</Link></li>
               </ul>
             </div>
             <div>
@@ -358,9 +403,9 @@ const Index = () => {
             <div>
               <h4 className="font-heading font-semibold text-foreground mb-4">Legal</h4>
               <ul className="space-y-2 text-sm text-muted-foreground mb-4">
-                <li><a href="#" className="hover:text-foreground transition-colors">Privacy Policy</a></li>
-                <li><a href="#" className="hover:text-foreground transition-colors">Accessibility Policy</a></li>
-                <li><a href="#" className="hover:text-foreground transition-colors">Terms of Service</a></li>
+                <li><Link to="/privacy-policy" className="hover:text-foreground transition-colors">Privacy Policy</Link></li>
+                <li><Link to="/accessibility-policy" className="hover:text-foreground transition-colors">Accessibility Policy</Link></li>
+                <li><Link to="/terms" className="hover:text-foreground transition-colors">Terms of Service</Link></li>
               </ul>
               <div className="flex gap-3">
                 {[Facebook, Twitter, Linkedin, Instagram].map((Icon, i) => (

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -7,6 +7,7 @@ import logoImg from "@/assets/logo.png";
 import { motion } from "framer-motion";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/contexts/AuthContext";
 import { Eye, EyeOff } from "lucide-react";
 
 const Login = () => {
@@ -17,6 +18,17 @@ const Login = () => {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { user, profile, loading } = useAuth();
+
+  useEffect(() => {
+    console.debug("[Login] auth state change", { loading, userId: user?.id, profileRole: profile?.role });
+    // Only redirect when the user's profile has been loaded to avoid
+    // navigating to a dashboard that then shows an indefinite "Loading profile..." state.
+    if (!loading && user && profile) {
+      console.debug("[Login] redirecting to dashboard", { role: profile?.role || "individual" });
+      navigate(`/dashboard/${profile?.role || "individual"}`);
+    }
+  }, [user, loading, profile, navigate]);
 
   const validate = () => {
     const errs: Record<string, string> = {};

@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { motion } from "framer-motion";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
+import requestService from "@/services/requestService";
 import { useToast } from "@/hooks/use-toast";
 import { useNavigate } from "react-router-dom";
 
@@ -55,49 +56,16 @@ const TasksPage = ({ role, filterByOrganizationOnly = role === "organization" }:
 
         if (filter === "accepted" && role === "volunteer") {
           console.log("📋 Fetching volunteer's accepted tasks...");
-          // Fetch accepted tasks for volunteers
-          const { data: assignments, error: assignError } = await supabase
-            .from("volunteer_assignments")
-            .select("request_id")
-            .eq("volunteer_id", user.id)
-            .eq("status", "accepted");
-
-          if (assignError) {
-            throw new Error(`Assignment query failed: ${assignError.message}`);
-          }
-
-          console.log("✅ Assignments found:", assignments?.length || 0);
-
-          if (assignments && assignments.length > 0) {
-            const ids = assignments.map((a) => a.request_id);
-            const { data: acceptedTasks, error: taskError } = await supabase
-              .from("service_requests")
-              .select("*")
-              .in("id", ids)
-              .order("created_at", { ascending: false });
-            
-            if (taskError) {
-              throw new Error(`Task query failed: ${taskError.message}`);
-            }
-
-            console.log("✅ Accepted tasks fetched:", acceptedTasks?.length || 0);
-            tasksToDisplay = acceptedTasks || [];
-          } else {
-            console.log("ℹ️ No assignments found");
-            tasksToDisplay = [];
-          }
+          // Fetch accepted tasks assigned to current user
+          const { data: acceptedTasks, error: taskError } = await requestService.fetchRequests({ status: "accepted", assigned_to: user.id });
+          if (taskError) throw taskError;
+          tasksToDisplay = acceptedTasks || [];
         } else {
           // Fetch open or completed requests
           const statusValue = filter === "completed" ? "completed" : "open";
           console.log(`📋 Fetching requests with status: ${statusValue}`);
-          
-          let query = supabase
-            .from("service_requests")
-            .select("*")
-            .eq("status", statusValue)
-            .order("created_at", { ascending: false });
-
-          const { data, error: queryError } = await query;
+          const statuses = statusValue === "open" ? ["open", "pending"] : [statusValue];
+          const { data, error: queryError } = await requestService.fetchRequests({ status: statuses });
           
           if (queryError) {
             throw new Error(`Request query failed: ${queryError.message}`);

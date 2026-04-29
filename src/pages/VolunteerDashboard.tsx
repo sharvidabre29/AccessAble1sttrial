@@ -9,22 +9,26 @@ import { motion } from "framer-motion";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import dashboardService from "@/services/dashboardService";
+import requestService from "@/services/requestService";
+import profileService from "@/services/profileService";
 import { Routes, Route, useNavigate } from "react-router-dom";
 import MessagesPage from "@/components/shared/MessagesPage";
 import SettingsPage from "@/components/shared/SettingsPage";
 import RequestsListPage from "@/components/shared/RequestsListPage";
 import RequestDetails from "./RequestDetails";
 import TasksPage from "./TasksPage";
+import VolunteerTasks from "./VolunteerTasks";
 
+// Volunteer nav: STRICT — only Dashboard, My Tasks, Completed Tasks, Profile
 const navItems = [
   { label: "Dashboard", to: "/dashboard/volunteer", icon: BarChart3 },
-  { label: "Requests", to: "/dashboard/volunteer/requests", icon: FileText },
-  { label: "Tasks", to: "/dashboard/volunteer/tasks", icon: ClipboardList },
-  { label: "Organizations", to: "/dashboard/volunteer/orgs", icon: Building2 },
-  { label: "Donations", to: "/dashboard/volunteer/donations", icon: DollarSign },
-  { label: "Messages", to: "/dashboard/volunteer/messages", icon: MessageSquare },
   { label: "Profile", to: "/dashboard/volunteer/profile", icon: User },
-  { label: "Settings", to: "/dashboard/volunteer/settings", icon: Settings },
+  { label: "Chats", to: "/dashboard/volunteer/messages", icon: MessageSquare },
+  { label: "My Tasks", to: "/dashboard/volunteer/tasks/my", icon: ClipboardList },
+  { label: "Available Requests", to: "/dashboard/volunteer/requests", icon: Search },
+  { label: "Completed Tasks", to: "/dashboard/volunteer/tasks/completed", icon: ClipboardList },
+  
 ];
 
 const urgencyColors: Record<string, string> = {
@@ -41,8 +45,11 @@ const DashboardHome = () => {
   useEffect(() => {
     if (!user) return;
     const fetch = async () => {
-      const { count: activeCount } = await supabase.from("volunteer_assignments").select("*", { count: "exact", head: true }).eq("volunteer_id", user.id).eq("status", "accepted");
-      const { count: completedCount } = await supabase.from("volunteer_assignments").select("*", { count: "exact", head: true }).eq("volunteer_id", user.id).eq("status", "completed");
+      // Active/completed counts for current volunteer
+      const { data: myAccepted } = await requestService.fetchRequests({ assigned_to: user.id, status: ["accepted", "in_progress"] });
+      const { data: myCompleted } = await requestService.fetchRequests({ assigned_to: user.id, status: "completed" });
+      const activeCount = (myAccepted || []).length;
+      const completedCount = (myCompleted || []).length;
       setStats({ completed: completedCount || 0, active: activeCount || 0, totalHours: (completedCount || 0) * 4 });
     };
     fetch();
@@ -81,11 +88,7 @@ const BrowseRequests = () => {
         setIsLoading(true);
         setError(null);
 
-        const { data, error: supabaseError } = await supabase
-          .from("service_requests")
-          .select("*")
-          .eq("status", "open")
-          .order("created_at", { ascending: false });
+          const { data, error: supabaseError } = await requestService.fetchRequests({ status: ["open", "pending"] });
 
         console.log("📊 Query result:", { data, error: supabaseError });
 
@@ -119,14 +122,33 @@ const BrowseRequests = () => {
       setError("Not authenticated");
       setIsLoading(false);
     }
+    // subscribe to requests changes and refetch
+    const channel = requestService.subscribeToRequests(() => fetchRequests());
+    return () => { channel?.unsubscribe?.(); };
   }, [user, toast]);
 
   const handleAccept = async (e: React.MouseEvent, requestId: string) => {
     e.stopPropagation();
     if (!user) return;
-    const { error } = await supabase.from("volunteer_assignments").insert({ request_id: requestId, volunteer_id: user.id, status: "accepted" });
-    if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
-    else { toast({ title: "Task accepted!" }); setRequests((prev) => prev.filter((r) => r.id !== requestId)); }
+    // check volunteers_required and current assigned count
+      const { data: req } = await supabase.from("service_requests").select("volunteers_required,status").eq("id", requestId).maybeSingle();
+    const { data: assigned } = await supabase.from("volunteer_assignments").select("id").eq("request_id", requestId);
+    if (req && req.volunteers_required && (assigned || []).length >= req.volunteers_required) {
+      toast({ title: "Limit reached", description: "This request already has enough volunteers.", variant: "destructive" });
+      return;
+    }
+    try {
+        const res = await requestService.acceptRequest(requestId, user.id);
+        console.log("acceptRequest response:", res);
+      if ((res as any).error) {
+        toast({ title: "Error", description: (res as any).error.message || "Failed to accept", variant: "destructive" });
+      } else {
+        toast({ title: "Task accepted!" });
+        setRequests((prev) => prev.filter((r) => r.id !== requestId));
+      }
+    } catch (err: any) {
+      toast({ title: "Error", description: err.message || String(err), variant: "destructive" });
+    }
   };
 
   return (
@@ -186,6 +208,42 @@ const ProfilePage = () => {
   const [skills, setSkills] = useState(profile?.skills || "");
   const [availability, setAvailability] = useState(profile?.availability || "");
   const [isLoading, setIsLoading] = useState(false);
+  const [preview, setPreview] = useState<string | null>(profile?.avatar_url || null);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+
+  const handleUpload = async () => {
+    if (!profile || !selectedFile) return;
+    setIsLoading(true);
+    const res = await profileService.uploadAvatar(profile.id, selectedFile);
+    setIsLoading(false);
+    if (res?.error) {
+      toast({ title: "Upload error", description: res.error.message || String(res.error), variant: "destructive" });
+    } else {
+      setPreview(res.url || null);
+      toast({ title: "Profile image updated" });
+      await refreshProfile();
+    }
+  };
+
+  const handleFileChange = (f: File | null) => {
+    setSelectedFile(f);
+    if (f) setPreview(URL.createObjectURL(f));
+  };
+
+  const handleDeleteAccount = async () => {
+    if (!profile) return;
+    setIsLoading(true);
+    // Delete profile row locally; actual auth user deletion requires server-side service role
+    const { error } = await supabase.from("profiles").delete().eq("id", profile.id);
+    setIsLoading(false);
+    if (error) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    } else {
+      // sign out
+      await supabase.auth.signOut();
+      window.location.href = "/login";
+    }
+  };
 
   const handleSave = async () => {
     if (!profile) return;
@@ -203,9 +261,20 @@ const ProfilePage = () => {
         <div className="space-y-2"><Label>Full Name</Label><Input value={name} onChange={(e) => setName(e.target.value)} /></div>
         <div className="space-y-2"><Label>Email</Label><Input value={profile?.email || ""} disabled className="opacity-60" /></div>
         <div className="space-y-2"><Label>Phone</Label><Input value={phone} onChange={(e) => setPhone(e.target.value)} /></div>
+        <div className="space-y-2">
+          <Label>Profile Image</Label>
+          <div className="flex items-center gap-3">
+            {preview ? <img src={preview} alt="preview" className="w-16 h-16 rounded-full object-cover" /> : <div className="w-16 h-16 rounded-full bg-muted" />}
+            <input type="file" accept="image/*" onChange={(e) => handleFileChange(e.target.files ? e.target.files[0] : null)} />
+            <Button onClick={handleUpload} disabled={!selectedFile || isLoading}>Upload</Button>
+          </div>
+        </div>
         <div className="space-y-2"><Label>Skills</Label><Input value={skills} onChange={(e) => setSkills(e.target.value)} placeholder="e.g. Teaching, Medical" /></div>
         <div className="space-y-2"><Label>Availability</Label><Input value={availability} onChange={(e) => setAvailability(e.target.value)} /></div>
-        <Button variant="hero" onClick={handleSave} disabled={isLoading}>{isLoading ? "Saving..." : "Save Changes"}</Button>
+        <div className="flex gap-2">
+          <Button variant="hero" onClick={handleSave} disabled={isLoading}>{isLoading ? "Saving..." : "Save Changes"}</Button>
+          <Button variant="destructive" onClick={handleDeleteAccount} disabled={isLoading}>Delete Account</Button>
+        </div>
       </div>
     </div>
   );
@@ -218,12 +287,12 @@ const VolunteerDashboard = () => {
         <Route index element={<DashboardHome />} />
         <Route path="requests" element={<BrowseRequests />} />
         <Route path="requests/:id" element={<RequestDetails />} />
-        <Route path="tasks" element={<TasksPage role="volunteer" filterByOrganizationOnly={false} />} />
-        <Route path="orgs" element={<RequestsListPage />} />
-        <Route path="donations" element={<div className="text-muted-foreground">View donation impact coming soon.</div>} />
-        <Route path="messages" element={<MessagesPage />} />
+        <Route path="tasks" element={<BrowseRequests />} />
+        <Route path="tasks/my" element={<VolunteerTasks initialTab="my" />} />
+        <Route path="tasks/completed" element={<VolunteerTasks initialTab="completed" />} />
+        <Route path="tasks/:id" element={<RequestDetails />} />
         <Route path="profile" element={<ProfilePage />} />
-        <Route path="settings" element={<SettingsPage />} />
+        <Route path="messages" element={<MessagesPage />} />
       </Routes>
     </DashboardLayout>
   );

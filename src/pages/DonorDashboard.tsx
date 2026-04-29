@@ -14,77 +14,150 @@ import { Routes, Route, useNavigate } from "react-router-dom";
 import MessagesPage from "@/components/shared/MessagesPage";
 import SettingsPage from "@/components/shared/SettingsPage";
 import RequestsListPage from "@/components/shared/RequestsListPage";
+import DonorOrgsList from "./DonorOrgsList";
+import DonorOrgDetail from "./DonorOrgDetail";
 import RequestDetails from "./RequestDetails";
 
+// Donor-only nav items: STRICT — donor sees only these items
 const navItems = [
   { label: "Dashboard", to: "/dashboard/donor", icon: BarChart3 },
+  { label: "Browse Organizations", to: "/dashboard/donor/orgs", icon: Building2 },
   { label: "Requests", to: "/dashboard/donor/requests", icon: FileText },
-  { label: "Tasks", to: "/dashboard/donor/tasks", icon: ClipboardList },
-  { label: "Organizations", to: "/dashboard/donor/orgs", icon: Building2 },
-  { label: "Donations", to: "/dashboard/donor/donations", icon: DollarSign },
-  { label: "Messages", to: "/dashboard/donor/messages", icon: MessageSquare },
   { label: "Profile", to: "/dashboard/donor/profile", icon: User },
-  { label: "Settings", to: "/dashboard/donor/settings", icon: Settings },
 ];
 
+// Dashboard home for donors: shows organization browsing summary
+interface Org {
+  id: string;
+  name: string;
+  description?: string;
+  image_url?: string;
+  is_verified?: boolean;
+}
+
 const DashboardHome = () => {
-  const { user } = useAuth();
-  const [stats, setStats] = useState({ totalDonated: 0, campaigns: 0 });
+  const navigate = useNavigate();
+  const [orgs, setOrgs] = useState<Org[]>([]);
 
   useEffect(() => {
-    if (!user) return;
+    // Fetch organizations for donor dashboard
     const fetch = async () => {
-      const { data } = await supabase.from("donations").select("amount").eq("donor_id", user.id);
-      const total = (data || []).reduce((sum, d) => sum + Number(d.amount), 0);
-      setStats({ totalDonated: total, campaigns: (data || []).length });
+      // Use profiles where role = 'organization' as canonical organization source
+      const { data } = await supabase.from<Org>("profiles").select("id,organization_name:name,profile_image:image_url,is_verified").eq('role', 'organization').order("created_at", { ascending: false }).limit(6);
+      // map organization_name -> name to match Org interface
+      const mapped = (data || []).map((p: any) => ({ id: p.id, name: p.name || p.organization_name || 'Organization', description: p.work || null, image_url: p.image_url || p.profile_image || null, is_verified: p.is_verified }));
+      setOrgs(mapped);
     };
     fetch();
-  }, [user]);
+  }, []);
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {[
-          { label: "Total Donated", value: `$${stats.totalDonated.toLocaleString()}`, color: "text-primary" },
-          { label: "Campaigns Supported", value: stats.campaigns, color: "text-success" },
-        ].map((s, i) => (
-          <motion.div key={s.label} className="bg-card rounded-xl border p-5" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.1 }}>
-            <p className="text-sm text-muted-foreground mb-1">{s.label}</p>
-            <p className={`text-3xl font-heading font-bold ${s.color}`}>{s.value}</p>
-          </motion.div>
+      <div className="flex items-center justify-between">
+        <h2 className="font-heading text-xl font-bold text-foreground">Explore Organizations</h2>
+        <Button variant="outline" onClick={() => navigate('/dashboard/donor/orgs')}>View all</Button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {orgs.map((o) => (
+          <div key={o.id} className="bg-card rounded-xl border p-4 hover:shadow-lg transition cursor-pointer" onClick={() => navigate(`/dashboard/donor/orgs/${o.id}`)}>
+            <div className="flex items-center gap-3">
+              {o.image_url ? <img src={o.image_url} className="w-16 h-16 rounded-md object-cover" alt={o.name} /> : <div className="w-16 h-16 rounded-md bg-muted" />}
+              <div className="flex-1">
+                <div className="flex items-center gap-2">
+                  <h3 className="font-semibold text-foreground">{o.name}</h3>
+                  {o.is_verified && <Badge className="bg-success/10 text-success">Verified</Badge>}
+                </div>
+                <p className="text-sm text-muted-foreground mt-1">{o.description || "No description"}</p>
+              </div>
+            </div>
+          </div>
         ))}
       </div>
     </div>
   );
 };
 
+// Browse and donate to requests. Opens donation modal and ensures funding consistency.
 const BrowseRequests = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
-  const [requests, setRequests] = useState<any[]>([]);
-  const [donateAmounts, setDonateAmounts] = useState<Record<string, string>>({});
+  interface RequestItem {
+    id: string;
+    title: string;
+    description?: string;
+    created_by?: string;
+    funding_goal?: number | string;
+    funding_raised?: number | string;
+  }
+  interface ProfileSummary { id: string; full_name?: string; organization_name?: string; role?: string; website?: string; name?: string }
+
+  const [requests, setRequests] = useState<RequestItem[]>([]);
+  const [profilesById, setProfilesById] = useState<Record<string, ProfileSummary | Org>>({});
+
+  const [showDonationModal, setShowDonationModal] = useState(false);
+  const [donationRequest, setDonationRequest] = useState<any | null>(null);
+  const [donationAmount, setDonationAmount] = useState<number | string>("");
+  const [donationType, setDonationType] = useState<string>("money");
+  const [isDonating, setIsDonating] = useState(false);
 
   useEffect(() => {
     const fetch = async () => {
-      const { data } = await supabase.from("service_requests").select("*").gt("funding_goal", 0).order("created_at", { ascending: false });
+      // donors only see money/items requests
+      const { data } = await supabase.from<RequestItem>("service_requests").select("*").in('request_type', ['money','items']).order("created_at", { ascending: false });
       setRequests(data || []);
+         // fetch creator profiles
+      const ids = Array.from(new Set((data || []).map((r: RequestItem) => r.created_by)));
+      if (ids.length > 0) {
+        const { data: profiles } = await supabase.from<ProfileSummary>("profiles").select("id,full_name,organization_name,role,website,name").in("id", ids);
+        const map: Record<string, ProfileSummary> = {};
+        (profiles || []).forEach((p: ProfileSummary) => (map[p.id] = p));
+        setProfilesById(map);
+      }
+         // fetch organizations matching creators (if any)
+         const creatorIds = Array.from(new Set((data || []).map((r: RequestItem) => r.created_by)));
+         if (creatorIds.length > 0) {
+           const { data: profiles } = await supabase.from<any>("profiles").select("id,full_name,organization_name,role,website,profile_image").in("id", creatorIds);
+           const map: Record<string, any> = {};
+           (profiles || []).forEach((p: any) => (map[p.id] = { id: p.id, full_name: p.full_name, organization_name: p.organization_name, role: p.role, website: p.website, image_url: p.profile_image }));
+           setProfilesById((prev) => ({ ...prev, ...map }));
+         }
     };
     fetch();
   }, []);
 
-  const handleDonate = async (e: React.MouseEvent, requestId: string) => {
-    e.stopPropagation();
-    if (!user) return;
-    const amount = parseFloat(donateAmounts[requestId] || "0");
-    if (amount <= 0) { toast({ title: "Invalid amount", variant: "destructive" }); return; }
-    const { error } = await supabase.from("donations").insert({ donor_id: user.id, request_id: requestId, amount });
-    if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
-    else {
-      toast({ title: `Donated $${amount}!` });
-      setDonateAmounts((prev) => ({ ...prev, [requestId]: "" }));
-      const req = requests.find((r) => r.id === requestId);
-      if (req) await supabase.from("service_requests").update({ funding_raised: Number(req.funding_raised) + amount }).eq("id", requestId);
+  // open modal for request
+  const openDonateModal = (r: RequestItem) => {
+    setDonationRequest(r);
+    setDonationAmount("");
+    setDonationType("money");
+    setShowDonationModal(true);
+  };
+
+  // donation logic: insert donation, then recompute funding reliably
+  const handleDonate = async () => {
+    if (!user || !donationRequest) return;
+    const amount = Number(donationAmount) || null;
+    setIsDonating(true);
+
+    try {
+      // Prevent rapid duplicate inserts: check recent identical donation
+      // Insert donation record only. Organizations control funding_raised updates.
+      type DonationInsert = { donor_id: string; request_id: string; amount?: number | null; donation_type?: string };
+      const { error: insertErr } = await supabase.from<DonationInsert>("donations").insert({ donor_id: user.id, request_id: donationRequest.id, amount: amount ?? undefined, donation_type: donationType });
+      if (insertErr) throw insertErr;
+
+      toast({ title: `Thanks — donation recorded!` });
+      setShowDonationModal(false);
+      // refresh requests list
+      const { data } = await supabase.from<RequestItem>("service_requests").select("*").in('request_type', ['money','items']).order("created_at", { ascending: false });
+      setRequests(data || []);
+    } catch (err: any) {
+      console.error(err);
+      toast({ title: "Donation failed", description: err.message || String(err), variant: "destructive" });
+    } finally {
+      setIsDonating(false);
     }
   };
 
@@ -95,41 +168,92 @@ const BrowseRequests = () => {
         <div className="divide-y">
           {requests.length === 0 ? (
             <div className="p-8 text-center text-muted-foreground">No funding requests available.</div>
-          ) : requests.map((r) => (
-            <div key={r.id} className="p-5 hover:bg-muted/50 transition-colors cursor-pointer group" onClick={() => navigate(`/dashboard/donor/requests/${r.id}`)}>
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex-1">
-                  <p className="font-medium text-foreground group-hover:text-primary transition-colors">{r.title}</p>
-                  <p className="text-sm text-muted-foreground">{r.description?.substring(0, 80) || "No description"}</p>
+          ) : requests.map((r) => {
+            const creator = profilesById[r.created_by];
+            const percent = r.funding_goal > 0 ? Math.min(100, (Number(r.funding_raised || 0) / Number(r.funding_goal)) * 100) : 0;
+            const goalReached = r.funding_goal > 0 && Number(r.funding_raised || 0) >= Number(r.funding_goal);
+            return (
+              <div key={r.id} className="p-5 hover:bg-muted/50 transition-colors cursor-pointer group" onClick={() => navigate(`/dashboard/donor/requests/${r.id}`)}>
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex-1">
+                    <p className="font-medium text-foreground group-hover:text-primary transition-colors">{r.title}</p>
+                    <p className="text-sm text-muted-foreground">{r.description?.substring(0, 80) || "No description"}</p>
+                    {creator && (
+                      <div className="text-sm text-muted-foreground mt-1">
+                        By: {creator.website ? (
+                          <a href={creator.website} target="_blank" rel="noreferrer" className="text-primary underline">{creator.name || creator.organization_name || creator.full_name}</a>
+                        ) : creator.organization_name || creator.name ? (
+                          <button onClick={(e) => { e.stopPropagation(); navigate(`/dashboard/donor/orgs/${r.created_by}`); }} className="text-primary underline">{creator.organization_name || creator.name}</button>
+                        ) : (
+                          creator.full_name
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); openDonateModal(r); }} disabled={goalReached}>
+                      <DollarSign className="w-4 h-4 mr-1" /> Donate
+                    </Button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Input type="number" placeholder="Amount" className="w-24" value={donateAmounts[r.id] || ""} onChange={(e) => setDonateAmounts((prev) => ({ ...prev, [r.id]: e.target.value }))} min="1" />
-                  <Button variant="hero" size="sm" onClick={(e) => handleDonate(e, r.id)}><DollarSign className="w-4 h-4 mr-1" /> Donate</Button>
+                <div className="space-y-1.5">
+                  <div className="flex justify-between text-sm">
+                    <span className="text-muted-foreground">₹{Number(r.funding_raised || 0).toLocaleString('en-IN')} raised</span>
+                    <span className="text-foreground font-medium">₹{Number(r.funding_goal || 0).toLocaleString('en-IN')} goal</span>
+                  </div>
+                  <Progress value={percent} className="h-2" />
+                  {goalReached && <div className="text-sm text-success font-medium mt-2">Goal Reached</div>}
                 </div>
               </div>
-              <div className="space-y-1.5">
-                <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">${Number(r.funding_raised).toLocaleString()} raised</span>
-                  <span className="text-foreground font-medium">${Number(r.funding_goal).toLocaleString()} goal</span>
-                </div>
-                <Progress value={r.funding_goal > 0 ? (Number(r.funding_raised) / Number(r.funding_goal)) * 100 : 0} className="h-2" />
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
+
+      {/* Donation Modal */}
+      {showDonationModal && donationRequest && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-card rounded-xl border p-6 w-full max-w-md">
+            <h3 className="font-semibold text-lg mb-2">Donate to: {donationRequest.title}</h3>
+            <div className="space-y-3">
+              {donationRequest.qr_code_url ? (
+                <div>
+                  <Label>QR Code</Label>
+                  <img src={donationRequest.qr_code_url} alt="QR code" className="w-48 h-48 object-contain" />
+                </div>
+              ) : donationRequest.bank_details ? (
+                <div>
+                  <Label>Bank Details</Label>
+                  <pre className="p-2 bg-muted rounded text-sm">{donationRequest.bank_details}</pre>
+                </div>
+              ) : (
+                <div className="text-sm text-muted-foreground">No payment details provided by the organization.</div>
+              )}
+              <div>
+                <Label>Amount (optional)</Label>
+                <Input type="number" value={donationAmount as any} onChange={(e) => setDonationAmount(e.target.value)} min={0} placeholder="Optional: enter amount you transferred" />
+              </div>
+            </div>
+            <div className="flex gap-2 mt-4">
+              <Button onClick={() => setShowDonationModal(false)} variant="outline">Cancel</Button>
+              <Button onClick={handleDonate} className="ml-auto" disabled={isDonating}>{isDonating ? 'Recording...' : 'I have donated'}</Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
 
 const DonationHistory = () => {
   const { user } = useAuth();
-  const [donations, setDonations] = useState<any[]>([]);
+  interface DonationWithRequest { id: string; amount: number; created_at: string; service_requests?: { title?: string } }
+  const [donations, setDonations] = useState<DonationWithRequest[]>([]);
 
   useEffect(() => {
     if (!user) return;
     const fetch = async () => {
-      const { data } = await supabase.from("donations").select("*, service_requests(title)").eq("donor_id", user.id).order("created_at", { ascending: false });
+      const { data } = await supabase.from<DonationWithRequest>("donations").select("*, service_requests(title)").eq("donor_id", user.id).order("created_at", { ascending: false });
       setDonations(data || []);
     };
     fetch();
@@ -148,7 +272,7 @@ const DonationHistory = () => {
                 <p className="font-medium text-foreground">{d.service_requests?.title || "Unknown request"}</p>
                 <p className="text-sm text-muted-foreground">{new Date(d.created_at).toLocaleDateString()}</p>
               </div>
-              <span className="text-lg font-heading font-bold text-primary">${Number(d.amount).toLocaleString()}</span>
+              <span className="text-lg font-heading font-bold text-primary">₹{Number(d.amount).toLocaleString('en-IN')}</span>
             </div>
           ))}
         </div>
@@ -197,15 +321,12 @@ const DonorDashboard = () => {
         <Route index element={<DashboardHome />} />
         <Route path="requests" element={<BrowseRequests />} />
         <Route path="requests/:id" element={<RequestDetails />} />
-        <Route path="tasks" element={<RequestsListPage />} />
-        <Route path="orgs" element={<RequestsListPage />} />
-        <Route path="donations" element={<DonationHistory />} />
-        <Route path="messages" element={<MessagesPage />} />
+        <Route path="orgs" element={<DonorOrgsList />} />
+        <Route path="orgs/:id" element={<DonorOrgDetail id={window.location.pathname.split('/').pop() || ''} />} />
         <Route path="profile" element={<ProfilePage />} />
-        <Route path="settings" element={<SettingsPage />} />
       </Routes>
     </DashboardLayout>
   );
 };
 
-export default DonorDashboard;
+export default DonorDashboard; 

@@ -1,3 +1,4 @@
+
 import { useEffect, useState } from "react";
 import { Heart, PlusCircle, User, BarChart3, Settings, MessageSquare, FileText, Building2, DollarSign, ClipboardList } from "lucide-react";
 import DashboardLayout from "@/components/DashboardLayout";
@@ -11,6 +12,7 @@ import { motion } from "framer-motion";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import profileService from "@/services/profileService";
 import { Routes, Route, useNavigate } from "react-router-dom";
 import MessagesPage from "@/components/shared/MessagesPage";
 import SettingsPage from "@/components/shared/SettingsPage";
@@ -21,16 +23,22 @@ import TasksPage from "./TasksPage";
 const navItems = [
   { label: "Dashboard", to: "/dashboard/individual", icon: BarChart3 },
   { label: "Requests", to: "/dashboard/individual/requests", icon: FileText },
+
+  // ✅ NEW: Chats (clean UX name for MessagesPage)
+  { label: "Chats", to: "/dashboard/individual/messages", icon: MessageSquare },
+
   { label: "Tasks", to: "/dashboard/individual/tasks", icon: ClipboardList },
   { label: "Organizations", to: "/dashboard/individual/orgs", icon: Building2 },
-  { label: "Donations", to: "/dashboard/individual/donations", icon: DollarSign },
-  { label: "Messages", to: "/dashboard/individual/messages", icon: MessageSquare },
+
+  // (optional keep or remove Messages — but YOU asked not to change logic,
+  // so safest is we REMOVE duplication instead of breaking UI)
+  
   { label: "Profile", to: "/dashboard/individual/profile", icon: User },
   { label: "Settings", to: "/dashboard/individual/settings", icon: Settings },
 ];
 
 const statusColors: Record<string, string> = {
-  open: "bg-info/10 text-info",
+  pending: "bg-info/10 text-info",
   in_progress: "bg-warning/10 text-warning",
   completed: "bg-success/10 text-success",
 };
@@ -81,6 +89,8 @@ const MyRequests = () => {
   const [urgency, setUrgency] = useState("medium");
   const [location, setLocation] = useState("");
   const [preferredContactMethod, setPreferredContactMethod] = useState("email");
+  const [deadline, setDeadline] = useState("");
+  const [volunteersRequired, setVolunteersRequired] = useState<number>(1);
   const [isCreating, setIsCreating] = useState(false);
   const [showForm, setShowForm] = useState(false);
 
@@ -96,10 +106,21 @@ const MyRequests = () => {
     e.preventDefault();
     if (!title.trim()) return;
     setIsCreating(true);
-    const { error } = await supabase.from("service_requests").insert({
-      created_by: user!.id, title: title.trim(), description: description.trim() || null,
-      category, urgency, location: location.trim() || null, preferred_contact_method: preferredContactMethod,
-    });
+    const payload = {
+  created_by: user!.id,
+  title: title.trim(),
+  description: description.trim() || null,
+  category,
+  urgency,
+  location: location.trim() || null,
+  preferred_contact_method: preferredContactMethod,
+  deadline,
+};
+
+const { error } = await supabase
+  .from("service_requests")
+  .insert(payload as any);
+  
     if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
     else { toast({ title: "Request created!" }); setTitle(""); setDescription(""); setLocation(""); setPreferredContactMethod("email"); setShowForm(false); await fetchRequests(); }
     setIsCreating(false);
@@ -164,8 +185,20 @@ const MyRequests = () => {
                 <SelectItem value="email">Email</SelectItem>
                 <SelectItem value="phone">Phone</SelectItem>
                 <SelectItem value="chat">Chat / Message</SelectItem>
+                <SelectItem value="video_call">Video Call</SelectItem>
+                <SelectItem value="any">Any</SelectItem>
               </SelectContent>
             </Select>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label>Deadline</Label>
+              <Input type="datetime-local" value={deadline} onChange={(e) => setDeadline(e.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label>Volunteers Required</Label>
+              <Input type="number" min={1} value={String(volunteersRequired)} onChange={(e) => setVolunteersRequired(Number(e.target.value) || 1)} />
+            </div>
           </div>
           <div className="flex gap-2">
             <Button type="submit" variant="hero" disabled={isCreating}>{isCreating ? "Creating..." : "Submit"}</Button>
@@ -200,25 +233,124 @@ const ProfilePage = () => {
   const [phone, setPhone] = useState(profile?.phone || "");
   const [address, setAddress] = useState(profile?.address || "");
   const [accessibilityNeeds, setAccessibilityNeeds] = useState(profile?.accessibility_needs || "");
+  const [disabilityId, setDisabilityId] = useState(
+  (profile as any)?.disability_id_number || ""
+);
+const [disabilityType, setDisabilityType] = useState(
+  (profile as any)?.disability_type || ""
+);
+  const [profileImagePreview, setProfileImagePreview] = useState<string | null>(profile?.avatar_url || null);
+  const [uploading, setUploading] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
 
   const handleSave = async () => {
     if (!profile) return;
     setIsLoading(true);
-    const { error } = await supabase.from("profiles").update({ full_name: name.trim(), phone: phone.trim(), address: address.trim(), accessibility_needs: accessibilityNeeds.trim() || null }).eq("id", profile.id);
+    const updates = {
+  full_name: name.trim(),
+  phone: phone.trim(),
+  address: address.trim(),
+  accessibility_needs: accessibilityNeeds.trim() || null,
+  disability_id_number: disabilityId || null,
+  disability_type: disabilityType || null,
+};
+
+const { error } = await supabase
+  .from("profiles")
+  .update(updates as any)
+  .eq("id", profile.id);
     if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
     else { toast({ title: "Profile updated!" }); await refreshProfile(); }
     setIsLoading(false);
+  };
+
+  // Handle profile image upload
+  const handleUpload = async (file?: File) => {
+    if (!profile || !file) return;
+    setUploading(true);
+    try {
+      const res = await profileService.uploadAvatar(profile.id, file);
+      if (res?.error) throw res.error;
+      setProfileImagePreview(res.url || null);
+      await refreshProfile();
+      toast({ title: "Uploaded", description: "Profile image uploaded." });
+    } catch (err: any) {
+  console.error("FULL ERROR:", err);
+  toast({
+    title: "Upload error",
+    description: err?.message || JSON.stringify(err),
+    variant: "destructive"
+  });
+}
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    // preview locally
+    const url = URL.createObjectURL(f);
+    setProfileImagePreview(url);
+    handleUpload(f);
+  };
+
+  // Delete account: delete profile row and sign out. Admin deletion of auth user requires service role.
+  const navigate = useNavigate();
+  const handleDeleteAccount = async () => {
+    if (!profile) return;
+    if (!confirm("Delete your account? This cannot be undone.")) return;
+    try {
+      // delete profile row
+      const { error: delError } = await supabase.from("profiles").delete().eq("id", profile.id);
+      if (delError) throw delError;
+      // Attempt to delete auth user (requires service key / admin privileges). May fail on client.
+      try {
+        // @ts-ignore - admin may not be available in client
+        if (supabase.auth && (supabase.auth as any).admin && (supabase.auth as any).admin.deleteUser) {
+          // ignore result; this may require server-side call
+          await (supabase.auth as any).admin.deleteUser(profile.id);
+        }
+      } catch (e) {
+        // ignore admin delete errors on client
+      }
+      await supabase.auth.signOut();
+      navigate("/login");
+    } catch (err: any) {
+      console.error(err);
+      toast({ title: "Error deleting account", description: err?.message || String(err), variant: "destructive" });
+    }
   };
 
   return (
     <div className="max-w-2xl">
       <h2 className="font-heading text-xl font-bold text-foreground mb-6">My Profile</h2>
       <div className="bg-card rounded-xl border p-6 space-y-4">
+        <div className="space-y-2">
+          <Label>Profile Image</Label>
+          {profileImagePreview ? (
+            <img src={profileImagePreview} alt="Profile" className="w-28 h-28 rounded-lg object-cover mb-2" />
+          ) : null}
+          <Input type="file" accept="image/*" onChange={handleFileChange} />
+        </div>
         <div className="space-y-2"><Label>Full Name</Label><Input value={name} onChange={(e) => setName(e.target.value)} /></div>
         <div className="space-y-2"><Label>Email</Label><Input value={profile?.email || ""} disabled className="opacity-60" /></div>
         <div className="space-y-2"><Label>Phone</Label><Input value={phone} onChange={(e) => setPhone(e.target.value)} /></div>
         <div className="space-y-2"><Label>Address</Label><Input value={address} onChange={(e) => setAddress(e.target.value)} /></div>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-2"><Label>Disability ID Number</Label><Input value={disabilityId} onChange={(e) => setDisabilityId(e.target.value)} /></div>
+          <div className="space-y-2"><Label>Disability Type</Label><Select value={disabilityType || ""} onValueChange={(value) => setDisabilityType(value)}>
+    <SelectTrigger>
+      <SelectValue placeholder="Select disability type" />
+    </SelectTrigger>
+    <SelectContent>
+      <SelectItem value="visual">Visual</SelectItem>
+      <SelectItem value="hearing">Hearing</SelectItem>
+      <SelectItem value="mobility">Mobility</SelectItem>
+      <SelectItem value="cognitive">Cognitive</SelectItem>
+      <SelectItem value="none">None</SelectItem>
+      <SelectItem value="other">Other</SelectItem>
+    </SelectContent>
+  </Select>
+</div>        </div>
         {profile?.individual_type === "differently_abled" && (
           <div className="space-y-2"><Label>Accessibility Needs</Label><Textarea value={accessibilityNeeds} onChange={(e) => setAccessibilityNeeds(e.target.value)} rows={3} /></div>
         )}
@@ -227,6 +359,7 @@ const ProfilePage = () => {
           <Badge className="bg-info/10 text-info">{profile?.individual_type === "differently_abled" ? "Differently Abled" : "Normal"}</Badge>
         </div>
         <Button variant="hero" onClick={handleSave} disabled={isLoading}>{isLoading ? "Saving..." : "Save Changes"}</Button>
+        <Button variant="destructive" onClick={handleDeleteAccount} className="w-full">Delete Account</Button>
       </div>
     </div>
   );
@@ -242,7 +375,7 @@ const IndividualDashboard = () => {
         <Route path="requests/:id" element={<RequestDetails />} />
         <Route path="tasks" element={<TasksPage role="individual" filterByOrganizationOnly={false} />} />
         <Route path="orgs" element={<RequestsListPage />} />
-        <Route path="donations" element={<div className="text-muted-foreground">Donation opportunities coming soon.</div>} />
+        {/* Donations removed for individuals per RBAC */}
         <Route path="messages" element={<MessagesPage />} />
         <Route path="profile" element={<ProfilePage />} />
         <Route path="settings" element={<SettingsPage />} />
