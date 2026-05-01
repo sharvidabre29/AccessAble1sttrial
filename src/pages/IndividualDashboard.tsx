@@ -1,4 +1,3 @@
-
 import { useEffect, useState } from "react";
 import { Heart, PlusCircle, User, BarChart3, Settings, MessageSquare, FileText, Building2, DollarSign, ClipboardList } from "lucide-react";
 import DashboardLayout from "@/components/DashboardLayout";
@@ -41,6 +40,7 @@ const statusColors: Record<string, string> = {
   pending: "bg-info/10 text-info",
   in_progress: "bg-warning/10 text-warning",
   completed: "bg-success/10 text-success",
+  past_deadline: "bg-destructive/10 text-destructive",
 };
 
 const DashboardHome = () => {
@@ -94,11 +94,42 @@ const MyRequests = () => {
   const [isCreating, setIsCreating] = useState(false);
   const [showForm, setShowForm] = useState(false);
 
-  const fetchRequests = async () => {
-    if (!user) return;
-    const { data } = await supabase.from("service_requests").select("*").eq("created_by", user.id).order("created_at", { ascending: false });
-    setRequests(data || []);
-  };
+const fetchRequests = async () => {
+  if (!user) return;
+
+  const { data, error } = await supabase
+    .from("service_requests")
+    .select("*")
+    .eq("created_by", user.id)
+    .order("created_at", { ascending: false });
+
+  if (error) return;
+
+  const now = new Date();
+
+  const updated = (data || []).map((r) => {
+    let computedStatus = r.status;
+
+    if (r.status !== "completed") {
+      if (r.deadline && new Date(r.deadline) < now) {
+        computedStatus = "past_deadline";
+      } else {
+        // 🔥 IMPORTANT FIX:
+        // restore normal state if deadline is updated
+        if (r.status === "past_deadline") {
+          computedStatus = "in_progress"; // or "pending"
+        }
+      }
+    }
+
+    return {
+      ...r,
+      status: computedStatus,
+    };
+  });
+
+  setRequests(updated);
+};
 
   useEffect(() => { fetchRequests(); }, [user]);
 
@@ -125,7 +156,21 @@ const { error } = await supabase
     else { toast({ title: "Request created!" }); setTitle(""); setDescription(""); setLocation(""); setPreferredContactMethod("email"); setShowForm(false); await fetchRequests(); }
     setIsCreating(false);
   };
+  const markCompleted = async (e: React.MouseEvent, id: string) => {
+  e.stopPropagation();
 
+  const { error } = await supabase
+    .from("service_requests")
+    .update({ status: "completed" })
+    .eq("id", id);
+
+  if (error) {
+    toast({ title: "Error", description: error.message, variant: "destructive" });
+  } else {
+    toast({ title: "Marked as completed!" });
+    fetchRequests();
+  }
+};
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -217,8 +262,19 @@ const { error } = await supabase
                 <p className="font-medium text-foreground group-hover:text-primary transition-colors">{r.title}</p>
                 <p className="text-sm text-muted-foreground">{new Date(r.created_at).toLocaleDateString()}</p>
               </div>
-              <Badge className={statusColors[r.status] || ""}>{r.status}</Badge>
-            </div>
+<div className="flex items-center gap-2">
+  <Badge className={statusColors[r.status] || ""}>{r.status}</Badge>
+
+  {r.status !== "completed" && (
+    <Button
+      size="sm"
+      variant="hero"
+      onClick={(e) => markCompleted(e, r.id)}
+    >
+      Complete
+    </Button>
+  )}
+</div>            </div>
           ))}
         </div>
       </div>
@@ -384,4 +440,4 @@ const IndividualDashboard = () => {
   );
 };
 
-export default IndividualDashboard;
+export default IndividualDashboard; 

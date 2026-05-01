@@ -13,44 +13,51 @@ export default function ChatPage({ requestId }: { requestId: string }) {
 
   const channelRef = useRef<any>(null);
 
-  // 1. LOAD CONVERSATION
+  // ✅ 1. LOAD OR CREATE CONVERSATION
   useEffect(() => {
-    const loadConversation = async () => {
-      const { data, error } = await supabase
-        .from("conversations")
-        .select("*")
-        .eq("request_id", requestId)
-        .maybeSingle();
+  const loadConversation = async () => {
+    if (!user) return;
 
-      if (error) {
-        console.error("Conversation load error:", error);
-        return;
-      }
+    const { data, error } = await supabase
+      .from("conversations")
+      .select("*")
+      .eq("request_id", requestId)
+      .maybeSingle();
 
-      setConversation(data);
-    };
+    if (error) {
+      console.error("Conversation load error:", error);
+      return;
+    }
 
-    loadConversation();
-  }, [requestId]);
+    if (!data) {
+      console.error("❌ Conversation not found");
+      return;
+    }
 
-  // 2. LOAD + REALTIME MESSAGES
+    setConversation(data);
+  };
+
+  loadConversation();
+}, [requestId, user]);
+
+  // ✅ 2. LOAD + REALTIME MESSAGES
   useEffect(() => {
     if (!conversation?.id) return;
 
     const fetchMessages = async () => {
-  const { data, error } = await supabase
-    .from("messages")
-    .select("*")
-    .eq("conversation_id", conversation.id)
-    .order("created_at", { ascending: true });
+      const { data, error } = await supabase
+        .from("messages")
+        .select("*")
+        .eq("conversation_id", conversation.id)
+        .order("created_at", { ascending: true });
 
-  if (error) {
-    console.error("Message fetch error:", error);
-    return;
-  }
+      if (error) {
+        console.error("Message fetch error:", error);
+        return;
+      }
 
-  setMessages(data || []);
-};
+      setMessages(data || []);
+    };
 
     fetchMessages();
 
@@ -59,9 +66,9 @@ export default function ChatPage({ requestId }: { requestId: string }) {
       supabase.removeChannel(channelRef.current);
     }
 
-    // REAL-TIME subscription
+    // realtime subscription
     const channel = supabase
-      .channel(`chat-${requestId}`)
+      .channel(`chat-${conversation.id}`)
       .on(
         "postgres_changes",
         {
@@ -83,9 +90,9 @@ export default function ChatPage({ requestId }: { requestId: string }) {
         supabase.removeChannel(channelRef.current);
       }
     };
-  }, [conversation?.id, requestId]);
+  }, [conversation?.id]);
 
-  // 3. SEND MESSAGE
+  // ✅ 3. SEND MESSAGE
   const sendMessage = async () => {
     if (!text.trim() || !conversation || !user) return;
 
@@ -95,14 +102,11 @@ export default function ChatPage({ requestId }: { requestId: string }) {
         : conversation.individual_id;
 
     const newMessage = {
-  conversation_id: conversation.id,
-  sender_id: user.id,
-  receiver_id: receiverId,
-  content: text,
-};
-
-    // optimistic UI update
-    setMessages((prev) => [...prev, { ...newMessage, id: crypto.randomUUID() }]);
+      conversation_id: conversation.id,
+      sender_id: user.id,
+      receiver_id: receiverId,
+      content: text,
+    };
 
     setText("");
 

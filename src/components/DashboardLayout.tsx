@@ -5,6 +5,7 @@ import logoImg from "@/assets/logo.png";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
+import useUserPermissions from "@/hooks/useUserPermissions";
 import NotificationDropdown from "@/components/NotificationDropdown";
 
 interface NavItem {
@@ -25,6 +26,7 @@ const DashboardLayout = ({ children, title, navItems, roleBadge, roleBadgeColor 
   const location = useLocation();
   const navigate = useNavigate();
   const { signOut, profile } = useAuth();
+  const { role } = useUserPermissions();
 
   const handleSignOut = async () => {
     await signOut();
@@ -42,7 +44,21 @@ const DashboardLayout = ({ children, title, navItems, roleBadge, roleBadgeColor 
           </Link>
         </div>
         <nav className="flex-1 p-3 space-y-1">
-          {navItems.map((item) => {
+          {/* Role-based rendering: strict per-role nav items */}
+          {(
+            // Strict role-based sidebar filtering. Use centralized `role` value from `useUserPermissions`.
+            profile
+              ? role === "individual"
+                ? navItems.filter((i) => ["Dashboard", "Requests", "Profile", "Chats"].includes(i.label))
+                : role === "organization"
+                ? navItems.filter((i) => ["Dashboard", "Requests", "Volunteer Assignments", "Profile"].includes(i.label))
+                : role === "volunteer"
+                ? navItems.filter((i) => ["Dashboard", "Available Requests", "My Tasks", "Completed Tasks", "Profile", "Chats"].includes(i.label))
+                : role === "donor"
+                ? navItems.filter((i) => ["Dashboard", "Browse Organizations", "Chats", "Profile"].includes(i.label))
+                : navItems
+              : navItems
+          ).map((item) => {
             const active = location.pathname === item.to;
             return (
               <Link

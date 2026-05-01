@@ -9,11 +9,16 @@ interface NavLinkCompatProps extends Omit<NavLinkProps, "className"> {
 }
 
 const NavLink = forwardRef<HTMLAnchorElement, NavLinkCompatProps>(
-  ({ className, activeClassName, pendingClassName, to, ...props }, ref) => {
+  ({ className, activeClassName, pendingClassName, to, end, ...props }, ref) => {
+    // Default to exact matching to avoid multiple items appearing active for
+    // routes that are prefixes of other routes (e.g. /tasks and /tasks/completed).
+    const endProp = end ?? true;
+
     return (
       <RouterNavLink
         ref={ref}
         to={to}
+        end={endProp}
         className={({ isActive, isPending }) =>
           cn(className, isActive && activeClassName, isPending && pendingClassName)
         }

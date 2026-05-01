@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
+import requestService from "@/services/requestService";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
@@ -18,9 +19,24 @@ const urgencyColors: Record<string, string> = {
   critical: "bg-destructive text-destructive-foreground",
 };
 
+interface RequestItem {
+  id: string;
+  title: string;
+  description?: string;
+  location?: string;
+  category?: string;
+  skills_needed?: string;
+  status?: string;
+  urgency?: string;
+  created_at?: string;
+  funding_goal?: number;
+  funding_raised?: number;
+  org_id?: string;
+}
+
 const RequestsListPage = () => {
-  const [requests, setRequests] = useState<any[]>([]);
-  const [filtered, setFiltered] = useState<any[]>([]);
+  const [requests, setRequests] = useState<RequestItem[]>([]);
+  const [filtered, setFiltered] = useState<RequestItem[]>([]);
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [urgencyFilter, setUrgencyFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -28,13 +44,35 @@ const RequestsListPage = () => {
 
   useEffect(() => {
     const fetch = async () => {
-      const { data } = await supabase
-        .from("service_requests")
-        .select("*")
-        .order("created_at", { ascending: false });
-      setRequests(data || []);
-    };
+      const { data, error } = await supabase
+  .from("service_requests")
+  .select("*")
+  .order("created_at", { ascending: false });
+
+if (error) {
+  console.error(error);
+  return;
+}
+
+setRequests((data as RequestItem[]) || []);}
     fetch();
+    // subscribe to changes; refetch on non-delete events, remove locally on delete for snappy UI
+    const channel = requestService.subscribeToRequests((p) => {
+      try {
+        const event = (p as any).eventType || (p as any).event || (p as any).type;
+        if (event === "DELETE" || event === "delete") {
+          const old = (p as any).old || (p as any).record || (p as any).oldRecord;
+          if (old && old.id) setRequests((prev) => prev.filter((r) => r.id !== old.id));
+          else fetch();
+        } else {
+          // for INSERT/UPDATE/TRUNCATE/etc, refetch to keep in sync
+          fetch();
+        }
+      } catch (e) {
+        fetch();
+      }
+    });
+    return () => { channel?.unsubscribe?.(); };
   }, []);
 
   useEffect(() => {

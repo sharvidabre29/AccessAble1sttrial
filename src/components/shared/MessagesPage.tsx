@@ -1,210 +1,264 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
-import { useToast } from "@/hooks/use-toast";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { Label } from "@/components/ui/label";
-import { Send, MessageSquare } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Send } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
+
+interface Conversation {
+  id: string;
+  request_id: string;
+  volunteer_id: string;
+  individual_id: string;
+  request_title?: string;
+  volunteer_name?: string;
+  individual_name?: string;
+}
 
 interface Message {
   id: string;
   sender_id: string;
   receiver_id: string;
   content: string;
-  is_read: boolean;
   created_at: string;
-}
-
-interface Conversation {
-  user_id: string;
-  user_name: string;
-  last_message: string;
-  last_time: string;
-  unread: number;
+  is_read?: boolean;
+  conversation_id?: string;
 }
 
 const MessagesPage = () => {
+  const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const { user } = useAuth();
-  const { toast } = useToast();
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [selectedUser, setSelectedUser] = useState<string | null>(null);
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [newMessage, setNewMessage] = useState("");
-  const [newRecipientEmail, setNewRecipientEmail] = useState("");
-  const [showNewConvo, setShowNewConvo] = useState(false);
+  const [searchParams] = useSearchParams();
 
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [selectedConversation, setSelectedConversation] = useState<string | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [text, setText] = useState("");
+  const [notifications, setNotifications] = useState<any[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  // =========================
+  // FETCH CONVERSATIONS
+  // =========================
   const fetchConversations = async () => {
     if (!user) return;
-    const { data } = await supabase
-      .from("messages")
-      .select("*")
-      .or(`sender_id.eq.${user.id},receiver_id.eq.${user.id}`)
-      .order("created_at", { ascending: false });
 
-    if (!data) return;
+    const { data, error } = await supabase
+      .from("conversations")
+      .select(`
+        id,
+        request_id,
+        volunteer_id,
+        individual_id,
+        service_requests(title),
+        volunteer:profiles!conversations_volunteer_id_fkey(full_name),
+        individual:profiles!conversations_individual_id_fkey(full_name)
+      `)
+      .or(`volunteer_id.eq.${user.id},individual_id.eq.${user.id}`);
 
-    const convos: Record<string, Conversation> = {};
-    for (const msg of data) {
-      const otherId = msg.sender_id === user.id ? msg.receiver_id : msg.sender_id;
-      if (!convos[otherId]) {
-        convos[otherId] = {
-          user_id: otherId,
-          user_name: otherId.substring(0, 8) + "...",
-          last_message: msg.content,
-          last_time: msg.created_at,
-          unread: 0,
-        };
-      }
-      if (msg.receiver_id === user.id && !msg.is_read) convos[otherId].unread++;
-    }
-
-    // Fetch names
-    const userIds = Object.keys(convos);
-    if (userIds.length > 0) {
-      const { data: profiles } = await supabase
-        .from("profiles")
-        .select("id, full_name")
-        .in("id", userIds);
-      if (profiles) {
-        for (const p of profiles) {
-          if (convos[p.id]) convos[p.id].user_name = p.full_name;
-        }
-      }
-    }
-
-    setConversations(Object.values(convos));
-  };
-
-  const fetchMessages = async (otherId: string) => {
-    if (!user) return;
-    const { data } = await supabase
-      .from("messages")
-      .select("*")
-      .or(`and(sender_id.eq.${user.id},receiver_id.eq.${otherId}),and(sender_id.eq.${otherId},receiver_id.eq.${user.id})`)
-      .order("created_at", { ascending: true });
-    setMessages(data || []);
-
-    // Mark as read
-    await supabase
-      .from("messages")
-      .update({ is_read: true })
-      .eq("sender_id", otherId)
-      .eq("receiver_id", user.id)
-      .eq("is_read", false);
-  };
-
-  useEffect(() => { fetchConversations(); }, [user]);
-
-  useEffect(() => {
-    if (selectedUser) fetchMessages(selectedUser);
-  }, [selectedUser]);
-
-  const handleSend = async () => {
-    if (!user || !selectedUser || !newMessage.trim()) return;
-    const { error } = await supabase.from("messages").insert({
-      sender_id: user.id,
-      receiver_id: selectedUser,
-      content: newMessage.trim(),
-    });
-    if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
-    else {
-      setNewMessage("");
-      await fetchMessages(selectedUser);
-      await fetchConversations();
-    }
-  };
-
-  const handleNewConvo = async () => {
-    if (!newRecipientEmail.trim()) return;
-    const { data } = await supabase
-      .from("profiles")
-      .select("id")
-      .eq("email", newRecipientEmail.trim())
-      .single();
-    if (!data) {
-      toast({ title: "User not found", variant: "destructive" });
+    if (error) {
+      console.error("Error fetching conversations:", error);
       return;
     }
-    setSelectedUser(data.id);
-    setShowNewConvo(false);
-    setNewRecipientEmail("");
+
+    const formatted = (data || []).map((c: any) => ({
+      id: c.id,
+      request_id: c.request_id,
+      volunteer_id: c.volunteer_id,
+      individual_id: c.individual_id,
+      request_title: c.service_requests?.title,
+      volunteer_name: c.volunteer?.full_name,
+      individual_name: c.individual?.full_name,
+    }));
+
+    setConversations(formatted);
+  };
+
+  // =========================
+  // AUTO OPEN FROM URL (FIXED SAFE)
+  // =========================
+  useEffect(() => {
+    if (!conversations.length) return;
+
+    const conversationId = searchParams.get("conversation");
+
+    if (conversationId) {
+      const convo = conversations.find(c => c.id === conversationId);
+      if (convo) {
+        setSelectedConversation(convo.id);
+        setActiveConversation(convo);
+        return;
+      }
+    }
+
+    if (!selectedConversation) {
+      setSelectedConversation(conversations[0]?.id || null);
+      setActiveConversation(conversations[0] || null);
+    }
+  }, [searchParams, conversations]);
+
+  // =========================
+  // FETCH MESSAGES (FIXED SAFE)
+  // =========================
+  const fetchMessages = async (conversationId: string) => {
+    const { data, error } = await supabase
+      .from("messages")
+      .select("*")
+      .eq("conversation_id", conversationId)
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      console.error("Fetch messages error:", error);
+      return;
+    }
+
+    setMessages(data || []);
+  };
+
+  // =========================
+  // LOAD CONVERSATIONS
+  // =========================
+  useEffect(() => {
+    if (!user?.id) return;
+
+    const load = async () => {
+      try {
+        await fetchConversations();
+      } catch (err) {
+        console.error(err);
+      }
+    };
+
+    load();
+  }, [user?.id]);
+
+  // =========================
+  // SYNC ACTIVE CONVERSATION
+  // =========================
+  useEffect(() => {
+    if (!selectedConversation) return;
+
+    const convo = conversations.find(c => c.id === selectedConversation);
+    if (convo) setActiveConversation(convo);
+  }, [selectedConversation, conversations]);
+
+  // =========================
+  // LOAD MESSAGES ON CHANGE
+  // =========================
+  useEffect(() => {
+    if (!selectedConversation) return;
+
+    setMessages([]); // FIX: prevent chat mixing
+    fetchMessages(selectedConversation);
+  }, [selectedConversation]);
+
+  // =========================
+  // MARK AS READ (FIXED USING DB FIELD is_read)
+  // =========================
+  useEffect(() => {
+    const markAsRead = async () => {
+      if (!selectedConversation || !user) return;
+
+      await supabase
+        .from("messages")
+        .update({ is_read: true })
+        .eq("conversation_id", selectedConversation)
+        .eq("receiver_id", user.id)
+        .eq("is_read", false);
+    };
+
+    markAsRead();
+  }, [selectedConversation, user]);
+
+  // =========================
+  // SEND MESSAGE (FIXED DB ALIGNMENT)
+  // =========================
+  const sendMessage = async () => {
+    if (!user || !selectedConversation || !text.trim() || !activeConversation) return;
+
+    const receiverId =
+      user.id === activeConversation.volunteer_id
+        ? activeConversation.individual_id
+        : activeConversation.volunteer_id;
+
+    if (!receiverId) return;
+
+    const { error } = await supabase
+      .from("messages")
+      .insert({
+        conversation_id: selectedConversation,
+        sender_id: user.id,
+        receiver_id: receiverId,
+        content: text,
+        is_read: false,
+        request_id: activeConversation.request_id || null,
+      });
+
+    if (error) {
+      console.error("Send message error:", error);
+      return;
+    }
+
+    setText("");
+    fetchMessages(selectedConversation);
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="font-heading text-xl font-bold text-foreground">Messages</h2>
-        <Button variant="hero" size="sm" onClick={() => setShowNewConvo(!showNewConvo)}>
-          <MessageSquare className="w-4 h-4 mr-1" /> New Message
-        </Button>
+    <div className="grid grid-cols-3 gap-4 h-[80vh]">
+
+      {/* LEFT: conversations */}
+      <div className="border rounded p-2 space-y-2">
+        {conversations.map((c) => (
+          <div
+            key={c.id}
+            onClick={() => {
+              setSelectedConversation(c.id);
+              setActiveConversation(c);
+            }}
+            className={`p-2 border-b cursor-pointer hover:bg-gray-100 ${
+              selectedConversation === c.id ? "bg-gray-200" : ""
+            }`}
+          >
+            <p className="font-medium">{c.request_title}</p>
+
+            <p className="text-sm text-muted-foreground">
+              {user?.id === c.volunteer_id
+                ? c.individual_name || "Unknown User"
+                : c.volunteer_name || "Unknown User"}
+            </p>
+          </div>
+        ))}
       </div>
 
-      {showNewConvo && (
-        <div className="bg-card rounded-xl border p-4 flex gap-2">
-          <Input placeholder="Recipient email" value={newRecipientEmail} onChange={(e) => setNewRecipientEmail(e.target.value)} />
-          <Button variant="hero" onClick={handleNewConvo}>Start</Button>
-        </div>
-      )}
+      {/* RIGHT: chat */}
+      <div className="col-span-2 border rounded flex flex-col">
 
-      <div className="grid md:grid-cols-3 gap-4 min-h-[400px]">
-        {/* Conversations list */}
-        <div className="bg-card rounded-xl border overflow-hidden">
-          <div className="p-3 border-b font-heading font-semibold text-sm text-foreground">Conversations</div>
-          <div className="divide-y max-h-[500px] overflow-auto">
-            {conversations.length === 0 ? (
-              <div className="p-6 text-center text-muted-foreground text-sm">No conversations yet.</div>
-            ) : (
-              conversations.map((c) => (
-                <button
-                  key={c.user_id}
-                  onClick={() => setSelectedUser(c.user_id)}
-                  className={`w-full text-left p-3 hover:bg-muted/50 transition-colors ${selectedUser === c.user_id ? "bg-primary/5" : ""}`}
-                >
-                  <div className="flex items-center justify-between">
-                    <p className="font-medium text-foreground text-sm truncate">{c.user_name}</p>
-                    {c.unread > 0 && (
-                      <span className="w-5 h-5 rounded-full bg-primary text-primary-foreground text-xs flex items-center justify-center">{c.unread}</span>
-                    )}
-                  </div>
-                  <p className="text-muted-foreground text-xs truncate">{c.last_message}</p>
-                </button>
-              ))
-            )}
-          </div>
-        </div>
-
-        {/* Messages */}
-        <div className="md:col-span-2 bg-card rounded-xl border flex flex-col">
-          {selectedUser ? (
-            <>
-              <div className="p-3 border-b font-heading font-semibold text-sm text-foreground">
-                {conversations.find((c) => c.user_id === selectedUser)?.user_name || "Chat"}
+        <div className="flex-1 p-3 overflow-auto space-y-2">
+          {messages.map((m) => (
+            <div
+              key={m.id}
+              className={m.sender_id === user?.id ? "text-right" : "text-left"}
+            >
+              <div className="inline-block px-3 py-1 bg-gray-200 rounded">
+                {m.content}
               </div>
-              <div className="flex-1 p-4 overflow-auto space-y-3 max-h-[400px]">
-                {messages.map((m) => (
-                  <div key={m.id} className={`flex ${m.sender_id === user?.id ? "justify-end" : "justify-start"}`}>
-                    <div className={`max-w-[70%] rounded-lg px-3 py-2 text-sm ${m.sender_id === user?.id ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"}`}>
-                      {m.content}
-                      <p className={`text-[10px] mt-1 ${m.sender_id === user?.id ? "text-primary-foreground/60" : "text-muted-foreground"}`}>
-                        {new Date(m.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                      </p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <div className="p-3 border-t flex gap-2">
-                <Input value={newMessage} onChange={(e) => setNewMessage(e.target.value)} placeholder="Type a message..." onKeyDown={(e) => e.key === "Enter" && handleSend()} />
-                <Button variant="hero" size="icon" onClick={handleSend}><Send className="w-4 h-4" /></Button>
-              </div>
-            </>
-          ) : (
-            <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">
-              Select a conversation or start a new one.
             </div>
-          )}
+          ))}
         </div>
+
+        {/* input */}
+        <div className="p-2 flex gap-2">
+          <Input
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="Type message..."
+          />
+          <Button onClick={sendMessage}>
+            <Send className="w-4 h-4" />
+          </Button>
+        </div>
+
       </div>
     </div>
   );

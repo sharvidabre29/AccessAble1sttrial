@@ -128,29 +128,63 @@ const BrowseRequests = () => {
   }, [user, toast]);
 
   const handleAccept = async (e: React.MouseEvent, requestId: string) => {
-    e.stopPropagation();
-    if (!user) return;
-    // check volunteers_required and current assigned count
-      const { data: req } = await supabase.from("service_requests").select("volunteers_required,status").eq("id", requestId).maybeSingle();
-    const { data: assigned } = await supabase.from("volunteer_assignments").select("id").eq("request_id", requestId);
-    if (req && req.volunteers_required && (assigned || []).length >= req.volunteers_required) {
-      toast({ title: "Limit reached", description: "This request already has enough volunteers.", variant: "destructive" });
+  e.stopPropagation();
+  if (!user) return;
+
+  try {
+    const res = await requestService.acceptRequest(requestId, user.id);
+
+    console.log("accept result:", res);
+
+    if ((res as any).error) {
+      toast({
+        title: "Error",
+        description: (res as any).error.message,
+        variant: "destructive",
+      });
       return;
     }
-    try {
-        const res = await requestService.acceptRequest(requestId, user.id);
-        console.log("acceptRequest response:", res);
-      if ((res as any).error) {
-        toast({ title: "Error", description: (res as any).error.message || "Failed to accept", variant: "destructive" });
-      } else {
-        toast({ title: "Task accepted!" });
-        setRequests((prev) => prev.filter((r) => r.id !== requestId));
-      }
-    } catch (err: any) {
-      toast({ title: "Error", description: err.message || String(err), variant: "destructive" });
-    }
-  };
 
+    const conversationId = (res as any).conversationId;
+
+    if (!conversationId) {
+      toast({
+        title: "Error",
+        description: "Conversation not created",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    toast({ title: "Task accepted!" });
+    // fetch request info (needed for notification)
+const { data: request } = await supabase
+  .from("service_requests")
+  .select("id, title, created_by")
+  .eq("id", requestId)
+  .single();
+
+if (request) {
+  await supabase.from("notifications").insert({
+    user_id: request.created_by,
+    type: "request_accepted",
+    title: "Request Accepted",
+    message: `Your request "${request.title}" has been accepted`,
+    related_request_id: request.id,
+    related_user_id: user.id,
+  });
+}
+    // ✅ navigate ONLY if valid
+    navigate(`/dashboard/volunteer/messages?conversation=${conversationId}`);
+
+  } catch (err: any) {
+    toast({
+      title: "Error",
+      description: err.message || String(err),
+      variant: "destructive",
+    });
+  }
+};
   return (
     <div className="space-y-6">
       <h2 className="font-heading text-xl font-bold text-foreground">Available Requests</h2>
@@ -177,6 +211,7 @@ const BrowseRequests = () => {
         <div className="bg-card rounded-xl border">
           <div className="divide-y">
             {requests.map((r) => (
+              
               <div key={r.id} className="p-5 flex items-center justify-between hover:bg-muted/50 transition-colors cursor-pointer group" onClick={() => navigate(`/dashboard/volunteer/requests/${r.id}`)}>
                 <div className="flex-1">
                   <p className="font-medium text-foreground group-hover:text-primary transition-colors">{r.title}</p>
@@ -187,6 +222,7 @@ const BrowseRequests = () => {
                     {r.skills_needed && r.skills_needed.split(",").map((s: string) => (
                       <Badge key={s.trim()} variant="outline" className="text-xs">{s.trim()}</Badge>
                     ))}
+                    
                   </div>
                 </div>
                 <Button variant="hero" size="sm" onClick={(e) => handleAccept(e, r.id)}><HandHelping className="w-4 h-4 mr-1" /> Accept</Button>

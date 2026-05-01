@@ -39,12 +39,23 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [loading, setLoading] = useState(true);
 
   const fetchProfile = async (userId: string) => {
-    const { data } = await supabase
-      .from("profiles")
-      .select("*")
-      .eq("id", userId)
-      .single();
-    setProfile(data as Profile | null);
+    console.debug("[AuthContext] fetching profile for userId", userId);
+    try {
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("*")
+        .eq("id", userId)
+        .maybeSingle();
+      if (error) {
+        console.error("Failed fetching profile", error);
+        setProfile(null);
+      } else {
+        setProfile(data as Profile | null);
+      }
+    } catch (err) {
+      console.error("Unexpected fetchProfile error", err);
+      setProfile(null);
+    }
   };
 
   const refreshProfile = async () => {
@@ -52,41 +63,61 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (_event, session) => {
-        setSession(session);
-        setUser(session?.user ?? null);
-        if (session?.user) {
-          setTimeout(() => fetchProfile(session.user.id), 0);
-        } else {
-          setProfile(null);
-        }
-        setLoading(false);
-      }
-    );
-
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    let mounted = true;
+    const onChange = async (_event: string, session: Session | null) => {
+      console.debug("[AuthContext] onAuthStateChange", { event: _event, userId: session?.user?.id });
       setSession(session);
       setUser(session?.user ?? null);
       if (session?.user) {
-        fetchProfile(session.user.id);
+        await fetchProfile(session.user.id);
+      } else {
+        setProfile(null);
       }
-      setLoading(false);
-    });
+      if (mounted) setLoading(false);
+    };
 
-    return () => subscription.unsubscribe();
+    const sub = supabase.auth.onAuthStateChange((evt, sess) => { onChange(evt, sess); });
+
+    // restore session on mount
+    (async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+        console.debug("[AuthContext] restored session", { userId: data.session?.user?.id });
+        setSession(data.session ?? null);
+        setUser(data.session?.user ?? null);
+        if (data.session?.user) await fetchProfile(data.session.user.id);
+      } catch (e) {
+        console.error("Auth restore error", e);
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    })();
+
+    // Listen to storage changes (multi-tab sign-in/out)
+    const onStorage = () => {
+      supabase.auth.getSession().then(({ data }) => {
+        setSession(data.session ?? null);
+        setUser(data.session?.user ?? null);
+      });
+    };
+    window.addEventListener("storage", onStorage);
+
+    return () => { mounted = false; sub.data?.subscription?.unsubscribe(); window.removeEventListener("storage", onStorage); };
   }, []);
 
   const signOut = async () => {
-    await supabase.auth.signOut();
-    setUser(null);
-    setSession(null);
-    setProfile(null);
+    try {
+      await supabase.auth.signOut();
+    } finally {
+      setUser(null);
+      setSession(null);
+      setProfile(null);
+    }
   };
 
   return (
     <AuthContext.Provider value={{ user, session, profile, loading, signOut, refreshProfile }}>
-      {children}
+      {!loading ? children : null}
     </AuthContext.Provider>
   );
 };

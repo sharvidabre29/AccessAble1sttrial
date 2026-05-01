@@ -39,13 +39,15 @@ const DashboardHome = () => {
   const [requests, setRequests] = useState<any[]>([]);
   const [stats, setStats] = useState({ active: 0, volunteers: 0, completed: 0, donations: 0 });
   const [completedRequests, setCompletedRequests] = useState<any[]>([]);
+ const [donationsMap, setDonationsMap] = useState<Record<string, any[]>>({});
 
-  const handleUploadProof = async (requestId: string, file: File | null) => {
+   const handleUploadProof = async (requestId: string, file: File | null) => {
     if (!file || !profile) return;
     const path = `${profile.id}/${requestId}/${Date.now()}_${file.name}`;
     const { error: uploadErr } = await supabase.storage.from('org-updates').upload(path, file, { cacheControl: '3600', upsert: false });
     if (uploadErr) return; // optionally toast
     const { data } = supabase.storage.from('org-updates').getPublicUrl(path);
+
     const publicUrl = (data as any).publicUrl || '';
     await supabase.from('organization_updates').insert({ org_id: profile.id, image_url: publicUrl, description: `Proof for request ${requestId}` });
     // refresh
@@ -53,21 +55,67 @@ const DashboardHome = () => {
     setCompletedRequests(comps || []);
   };
 
-  useEffect(() => {
-    if (!user) return;
-    const fetchData = async () => {
-      const { data: reqs } = await supabase.from("service_requests").select("*").eq("created_by", user.id).order("created_at", { ascending: false }).limit(5);
-      setRequests(reqs || []);
+useEffect(() => {
+  if (!user) return;
 
-      const { count: activeCount } = await supabase.from("service_requests").select("*", { count: "exact", head: true }).eq("created_by", user.id).neq("status", "completed");
-      const { count: completedCount } = await supabase.from("service_requests").select("*", { count: "exact", head: true }).eq("created_by", user.id).eq("status", "completed");
-      const { data: completedReqs } = await supabase.from("service_requests").select("*").eq("created_by", user.id).eq("status", "completed").order("created_at", { ascending: false }).limit(5);
+  const fetchData = async () => {
+    const { data: reqs } = await supabase
+      .from("service_requests")
+      .select("*")
+      .eq("created_by", user.id)
+      .order("created_at", { ascending: false })
+      .limit(5);
 
-      setStats({ active: activeCount || 0, volunteers: 0, completed: completedCount || 0, donations: 0 });
-      setCompletedRequests(completedReqs || []);
+    setRequests(reqs || []);
+
+    const { count: activeCount } = await supabase
+      .from("service_requests")
+      .select("*", { count: "exact", head: true })
+      .eq("created_by", user.id)
+      .neq("status", "completed");
+
+    const { count: completedCount } = await supabase
+      .from("service_requests")
+      .select("*", { count: "exact", head: true })
+      .eq("created_by", user.id)
+      .eq("status", "completed");
+
+    const { data: completedReqs } = await supabase
+      .from("service_requests")
+      .select("*")
+      .eq("created_by", user.id)
+      .eq("status", "completed")
+      .order("created_at", { ascending: false })
+      .limit(5);
+
+    // ✅ FIXED donations fetch (NO TOP LEVEL AWAIT)
+    const fetchDonations = async () => {
+      const { data } = await supabase.from("donations").select("*");
+
+      const grouped: Record<string, any[]> = {};
+
+      (data || []).forEach((d) => {
+        if (!grouped[d.request_id]) grouped[d.request_id] = [];
+        grouped[d.request_id].push(d);
+      });
+
+      setDonationsMap(grouped);
     };
-    fetchData();
-  }, [user]);
+
+    await fetchDonations();
+
+    setStats({
+      active: activeCount || 0,
+      volunteers: 0,
+      completed: completedCount || 0,
+      donations: 0,
+    });
+
+    setCompletedRequests(completedReqs || []);
+  };
+
+  fetchData();
+}, [user]);
 
   return (
     <div className="space-y-6">
@@ -94,6 +142,17 @@ const DashboardHome = () => {
               <div>
                 <p className="font-medium text-foreground">{r.title}</p>
                 <p className="text-sm text-muted-foreground">{new Date(r.created_at).toLocaleDateString()}</p>
+                {donationsMap[r.id]?.length > 0 && (
+  <div className="mt-2 text-sm">
+    <p className="font-semibold">Recent Donations</p>
+
+    {donationsMap[r.id].map((d) => (
+      <div key={d.id} className="text-xs text-muted-foreground">
+        ₹{d.amount} donated
+      </div>
+    ))}
+  </div>
+)}
               </div>
               <Badge className={statusColors[r.status] || ""}>{r.status}</Badge>
             </div>
@@ -107,9 +166,21 @@ const DashboardHome = () => {
             <div className="p-8 text-center text-muted-foreground">No completed requests yet.</div>
           ) : completedRequests.map((r) => (
             <div key={r.id} className="p-5 flex items-center justify-between hover:bg-muted/50 transition-colors">
+
               <div>
                 <p className="font-medium text-foreground">{r.title}</p>
                 <p className="text-sm text-muted-foreground">{new Date(r.created_at).toLocaleDateString()}</p>
+                {donationsMap[r.id]?.length > 0 && (
+  <div className="mt-2 text-sm">
+    <p className="font-semibold">Recent Donations</p>
+
+    {donationsMap[r.id].map((d) => (
+      <div key={d.id} className="text-xs text-muted-foreground">
+        ₹{d.amount} donated
+      </div>
+    ))}
+  </div>
+)}
               </div>
               <div className="flex items-center gap-2">
                 <input type="file" accept="image/*" onChange={(e) => handleUploadProof(r.id, e.target.files ? e.target.files[0] : null)} />

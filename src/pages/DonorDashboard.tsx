@@ -22,7 +22,8 @@ import RequestDetails from "./RequestDetails";
 const navItems = [
   { label: "Dashboard", to: "/dashboard/donor", icon: BarChart3 },
   { label: "Browse Organizations", to: "/dashboard/donor/orgs", icon: Building2 },
-  { label: "Requests", to: "/dashboard/donor/requests", icon: FileText },
+  { label: "My Donations", to: "/dashboard/donor/donations", icon: History },
+  { label: "Chats", to: "/dashboard/donor/messages", icon: MessageSquare },
   { label: "Profile", to: "/dashboard/donor/profile", icon: User },
 ];
 
@@ -313,18 +314,75 @@ const ProfilePage = () => {
     </div>
   );
 };
+const DonorOverviewDashboard = () => {
+  const { user } = useAuth();
+  const [totalDonated, setTotalDonated] = useState(0);
+  const [donationCount, setDonationCount] = useState(0);
 
+  useEffect(() => {
+    const fetch = async () => {
+      if (!user) return;
+
+      const { data } = await supabase
+        .from("donations")
+        .select("amount")
+        .eq("donor_id", user.id);
+
+      const total = (data || []).reduce((sum, d) => sum + Number(d.amount || 0), 0);
+
+      setTotalDonated(total);
+      setDonationCount(data?.length || 0);
+    };
+
+    fetch();
+  }, [user]);
+
+  return (
+    <div className="space-y-6">
+
+      {/* Top Stats */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="p-4 bg-card border rounded-xl">
+          <p className="text-sm text-muted-foreground">Total Donated</p>
+          <h2 className="text-2xl font-bold">₹{totalDonated.toLocaleString("en-IN")}</h2>
+        </div>
+
+        <div className="p-4 bg-card border rounded-xl">
+          <p className="text-sm text-muted-foreground">Total Donations</p>
+          <h2 className="text-2xl font-bold">{donationCount}</h2>
+        </div>
+
+        <div className="p-4 bg-card border rounded-xl">
+          <p className="text-sm text-muted-foreground">Impact Level</p>
+          <h2 className="text-2xl font-bold text-green-600">
+            {totalDonated > 5000 ? "High Impact" : "Growing"}
+          </h2>
+        </div>
+      </div>
+
+      {/* Progress Section */}
+      <div className="bg-card border rounded-xl p-5">
+        <h3 className="font-semibold mb-3">Donation Progress</h3>
+        <Progress value={Math.min((totalDonated / 10000) * 100, 100)} />
+        <p className="text-sm text-muted-foreground mt-2">
+          ₹10,000 milestone goal for impact badge
+        </p>
+      </div>
+
+    </div>
+  );
+};
 const DonorDashboard = () => {
   return (
     <DashboardLayout title="Donor Dashboard" navItems={navItems} roleBadge="Donor" roleBadgeColor="bg-primary/10 text-primary">
       <Routes>
-        <Route index element={<DashboardHome />} />
-        <Route path="requests" element={<BrowseRequests />} />
-        <Route path="requests/:id" element={<RequestDetails />} />
-        <Route path="orgs" element={<DonorOrgsList />} />
-        <Route path="orgs/:id" element={<DonorOrgDetail id={window.location.pathname.split('/').pop() || ''} />} />
-        <Route path="profile" element={<ProfilePage />} />
-      </Routes>
+  <Route index element={<DonorOverviewDashboard />} />
+  <Route path="orgs" element={<DonorOrgsList />} />
+  <Route path="orgs/:id" element={<DonorOrgDetail />} />
+  <Route path="donations" element={<DonationHistory />} />
+  <Route path="profile" element={<ProfilePage />} />
+  <Route path="messages" element={<MessagesPage />} />
+</Routes>
     </DashboardLayout>
   );
 };
