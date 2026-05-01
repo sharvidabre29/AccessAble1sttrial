@@ -1,12 +1,13 @@
-import { ReactNode } from "react";
+import { ReactNode, useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { Bell, User, LogOut, LucideIcon, Settings } from "lucide-react";
+import { User, LogOut, LucideIcon, Settings } from "lucide-react";
 import logoImg from "@/assets/logo.png";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
 import useUserPermissions from "@/hooks/useUserPermissions";
-import NotificationDropdown from "@/components/NotificationDropdown";
+import { NotificationCenter } from "@/components/NotificationCenter";
+import { supabase } from "@/integrations/supabase/client";
 
 interface NavItem {
   label: string;
@@ -27,6 +28,36 @@ const DashboardLayout = ({ children, title, navItems, roleBadge, roleBadgeColor 
   const navigate = useNavigate();
   const { signOut, profile } = useAuth();
   const { role } = useUserPermissions();
+  const [orgs, setOrgs] = useState<Array<{ id: string; organization_name?: string }>>([]);
+
+  useEffect(() => {
+    if (role !== "donor") return;
+    let mounted = true;
+    const fetchOrgs = async () => {
+      try {
+        const { data } = await supabase
+          .from("profiles")
+          .select("id, organization_name, avatar_url, is_verified")
+          .eq("role", "organization")
+          .order("created_at", { ascending: false })
+          .limit(10);
+
+        console.debug("[DashboardLayout] fetched orgs", { role, count: (data || []).length });
+        if (!mounted) return;
+        setOrgs((data || []) as any[]);
+      } catch (err) {
+        console.error("[DashboardLayout] fetch orgs error", err);
+        if (!mounted) return;
+        setOrgs([]);
+      }
+    };
+
+    fetchOrgs();
+
+    return () => {
+      mounted = false;
+    };
+  }, [role]);
 
   const handleSignOut = async () => {
     await signOut();
@@ -76,6 +107,23 @@ const DashboardLayout = ({ children, title, navItems, roleBadge, roleBadgeColor 
               </Link>
             );
           })}
+          {/* If donor, show a small list of organizations under the Browse Organizations nav item */}
+              {role === "donor" && (
+                <div className="mt-2 px-3">
+                  <div className="text-xs text-sidebar-foreground/60 mb-2">Popular Organizations</div>
+                  <div className="space-y-1">
+                    {orgs.length === 0 ? (
+                      <div className="text-sm text-sidebar-foreground/60">No organizations available</div>
+                    ) : (
+                      orgs.map((o) => (
+                        <button key={o.id} onClick={() => navigate(`/dashboard/donor/orgs/${o.id}`)} className="w-full text-left text-sm px-2 py-1 rounded hover:bg-sidebar-accent/40 text-sidebar-foreground/80">
+                          {o.organization_name || "Organization"}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
         </nav>
         <div className="p-3 border-t border-sidebar-border space-y-1">
           {profile && (
@@ -102,7 +150,7 @@ const DashboardLayout = ({ children, title, navItems, roleBadge, roleBadgeColor 
             <span className={cn("px-2.5 py-0.5 rounded-full text-xs font-medium", roleBadgeColor)}>{roleBadge}</span>
           </div>
           <div className="flex items-center gap-2">
-            <NotificationDropdown role={navItems[0]?.to.split("/")[2] || "individual"} />
+            <NotificationCenter />
             <Button variant="ghost" size="icon">
               <User className="w-4 h-4" />
             </Button>

@@ -44,10 +44,25 @@ export const acceptRequest = async (requestId: string, volunteerId: string) => {
       .update({
         assigned_to: volunteerId,
         status: "in_progress",
+        updated_at: new Date().toISOString(),
       })
       .eq("id", requestId);
 
     if (updateError) return { error: updateError };
+
+    // 1b. Track the volunteer assignment so the task can show real volunteer counts/names
+    const { error: assignmentError } = await supabase
+      .from("volunteer_assignments")
+      .upsert(
+        {
+          request_id: requestId,
+          volunteer_id: volunteerId,
+          status: "accepted",
+        },
+        { onConflict: "request_id,volunteer_id" }
+      );
+
+    if (assignmentError) return { error: assignmentError };
 
     // 2. Get request creator
     const { data: request, error: reqError } = await supabase
@@ -153,6 +168,35 @@ export const subscribeToRequests = (callback: (payload: any) => void) => {
 
   return channel;
 };
+
+/* ---------------------------
+   UPDATE REQUEST
+----------------------------*/
+export const updateRequest = async (
+  requestId: string,
+  userId: string,
+  updates: Partial<RequestRow>
+) => {
+  try {
+    const { data, error } = await supabase
+      .from("service_requests")
+      .update({
+        ...updates,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", requestId)
+      .eq("created_by", userId)
+      .select()
+      .single();
+
+    if (error) return { error };
+
+    return { data };
+  } catch (err: any) {
+    return { error: err };
+  }
+};
+
 /* ---------------------------
    EXPORT ALL
 ----------------------------*/
@@ -161,4 +205,5 @@ export default {
   acceptRequest,
   subscribeToRequests,
   deleteRequest,
+  updateRequest,
 };

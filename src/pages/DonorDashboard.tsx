@@ -44,9 +44,9 @@ const DashboardHome = () => {
     // Fetch organizations for donor dashboard
     const fetch = async () => {
       // Use profiles where role = 'organization' as canonical organization source
-      const { data } = await supabase.from<Org>("profiles").select("id,organization_name:name,profile_image:image_url,is_verified").eq('role', 'organization').order("created_at", { ascending: false }).limit(6);
+      const { data } = await supabase.from<Org>("profiles").select("id,organization_name:name,avatar_url:image_url,is_verified").eq('role', 'organization').order("created_at", { ascending: false }).limit(6);
       // map organization_name -> name to match Org interface
-      const mapped = (data || []).map((p: any) => ({ id: p.id, name: p.name || p.organization_name || 'Organization', description: p.work || null, image_url: p.image_url || p.profile_image || null, is_verified: p.is_verified }));
+      const mapped = (data || []).map((p: any) => ({ id: p.id, name: p.name || p.organization_name || 'Organization', description: null, image_url: p.image_url || p.avatar_url || null, is_verified: p.is_verified }));
       setOrgs(mapped);
     };
     fetch();
@@ -119,9 +119,9 @@ const BrowseRequests = () => {
          // fetch organizations matching creators (if any)
          const creatorIds = Array.from(new Set((data || []).map((r: RequestItem) => r.created_by)));
          if (creatorIds.length > 0) {
-           const { data: profiles } = await supabase.from<any>("profiles").select("id,full_name,organization_name,role,website,profile_image").in("id", creatorIds);
+           const { data: profiles } = await supabase.from<any>("profiles").select("id,full_name,organization_name,role,website,avatar_url").in("id", creatorIds);
            const map: Record<string, any> = {};
-           (profiles || []).forEach((p: any) => (map[p.id] = { id: p.id, full_name: p.full_name, organization_name: p.organization_name, role: p.role, website: p.website, image_url: p.profile_image }));
+           (profiles || []).forEach((p: any) => (map[p.id] = { id: p.id, full_name: p.full_name, organization_name: p.organization_name, role: p.role, website: p.website, image_url: p.avatar_url }));
            setProfilesById((prev) => ({ ...prev, ...map }));
          }
     };
@@ -382,6 +382,8 @@ const DonorDashboard = () => {
   <Route path="donations" element={<DonationHistory />} />
   <Route path="profile" element={<ProfilePage />} />
   <Route path="messages" element={<MessagesPage />} />
+  <Route path="requests" element={<RequestsListPage />} />
+  <Route path="requests/:id" element={<RequestDetails />} />
 </Routes>
     </DashboardLayout>
   );
